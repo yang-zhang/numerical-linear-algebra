@@ -1,0 +1,3213 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "You can read an overview of this Numerical Linear Algebra course in [this blog post](http://www.fast.ai/2017/07/17/num-lin-alg/).  The course was originally taught in the [University of San Francisco MS in Analytics](https://www.usfca.edu/arts-sciences/graduate-programs/analytics) graduate program.  Course lecture videos are [available on YouTube](https://www.youtube.com/playlist?list=PLtmWHNX-gukIc92m1K0P6bIOnZb-mg0hY) (note that the notebook numbers and video numbers do not line up, since some notebooks took longer than 1 video to cover).\n",
+    "\n",
+    "You can ask questions about the course on [our fast.ai forums](http://forums.fast.ai/c/lin-alg)."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# 2. Topic Modeling with NMF and SVD"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Topic modeling is a great way to get started with matrix factorizations. We start with a **term-document matrix**:\n",
+    "\n",
+    "<img src=\"images/document_term.png\" alt=\"term-document matrix\" style=\"width: 80%\"/>\n",
+    "(source: [Introduction to Information Retrieval](http://player.slideplayer.com/15/4528582/#))\n",
+    "\n",
+    "We can decompose this into one tall thin matrix times one wide short matrix (possibly with a diagonal matrix in between).\n",
+    "\n",
+    "Notice that this representation does not take into account word order or sentence structure.  It's an example of a **bag of words** approach."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "**My note**: \"...We can decompose this into one tall thin matrix times one wide short matrix (possibly with a diagonal matrix in between).\" \n",
+    "\n",
+    "This original matrix is (n_words by n_doc). Tall thin matrix is (n_words by some_small_n), wide short matrix (some_small_n by n_doc). The possibly diagnoal matrix in between is (some_small_n by some_small_n)."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Motivation"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Consider the most extreme case - reconstructing the matrix using an outer product of two vectors. Clearly, in most cases we won't be able to reconstruct the matrix exactly. But if we had one vector with the relative frequency of each vocabulary word out of the total word count, and one with the average number of words per document, then that outer product would be as close as we can get.\n",
+    "\n",
+    "Now consider increasing that matrices to two columns and two rows. The optimal decomposition would now be to cluster the documents into two groups, each of which has as different a distribution of words as possible to each other, but as similar as possible amongst the documents in the cluster. We will call those two groups \"topics\". And we would cluster the words into two groups, based on those which most frequently appear in each of the topics. "
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "**My note**: \"Consider the most extreme case...\": (N_word by 1) * (1 by N_doc) -> (N_word by N_doc)\n",
+    "```\n",
+    "[freq_word1, freq_word2, ...].T * [n_words_doc1, n_words_doc2, ...] \n",
+    ":= f * [n_words_doc1, n_words_doc2, ...] \n",
+    "= [n_words_doc1 * f, n_words_doc2 * f, ...]\n",
+    "```\n",
+    "\n",
+    "\"Now consider increasing that matrices to two columns and two rows...\": (N_word by 2) * (2 by N_doc) -> (N_word by N_doc)\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### In today's class"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "We'll take a dataset of documents in several different categories, and find topics (consisting of groups of words) for them.  Knowing the actual categories helps us evaluate if the topics we find make sense.\n",
+    "\n",
+    "We will try this with two different matrix factorizations: **Singular Value Decomposition (SVD)** and **Non-negative Matrix Factorization (NMF)**"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 28,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "import numpy as np\n",
+    "from sklearn.datasets import fetch_20newsgroups\n",
+    "from sklearn import decomposition\n",
+    "from scipy import linalg\n",
+    "import matplotlib.pyplot as plt"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 29,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "%matplotlib inline\n",
+    "# np.set_printoptions(suppress=True)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Additional Resources"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "- [Data source](http://scikit-learn.org/stable/datasets/twenty_newsgroups.html): Newsgroups are discussion groups on Usenet, which was popular in the 80s and 90s before the web really took off.  This dataset includes 18,000 newsgroups posts with 20 topics.\n",
+    "- [Chris Manning's book chapter](https://nlp.stanford.edu/IR-book/pdf/18lsi.pdf) on matrix factorization and LSI \n",
+    "- Scikit learn [truncated SVD LSI details](http://scikit-learn.org/stable/modules/decomposition.html#lsa)\n",
+    "\n",
+    "### Other Tutorials\n",
+    "- [Scikit-Learn: Out-of-core classification of text documents](http://scikit-learn.org/stable/auto_examples/applications/plot_out_of_core_classification.html): uses [Reuters-21578](https://archive.ics.uci.edu/ml/datasets/reuters-21578+text+categorization+collection) dataset (Reuters articles labeled with ~100 categories), HashingVectorizer\n",
+    "- [Text Analysis with Topic Models for the Humanities and Social Sciences](https://de.dariah.eu/tatom/index.html): uses [British and French Literature dataset](https://de.dariah.eu/tatom/datasets.html) of Jane Austen, Charlotte Bronte, Victor Hugo, and more"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Set up data"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Scikit Learn comes with a number of built-in datasets, as well as loading utilities to load several standard external datasets. This is a [great resource](http://scikit-learn.org/stable/datasets/), and the datasets include Boston housing prices, face images, patches of forest, diabetes, breast cancer, and more.  We will be using the newsgroups dataset.\n",
+    "\n",
+    "Newsgroups are discussion groups on Usenet, which was popular in the 80s and 90s before the web really took off.  This dataset includes 18,000 newsgroups posts with 20 topics.  "
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 30,
+=======
+   "execution_count": 15,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "categories = ['alt.atheism', 'talk.religion.misc', 'comp.graphics', 'sci.space']\n",
+    "remove = ('headers', 'footers', 'quotes')\n",
+    "newsgroups_train = fetch_20newsgroups(subset='train', categories=categories, remove=remove)\n",
+    "newsgroups_test = fetch_20newsgroups(subset='test', categories=categories, remove=remove)"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 31,
+   "metadata": {
+    "scrolled": true
+   },
+=======
+   "execution_count": 16,
+   "metadata": {},
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "((2034,), (2034,))"
+      ]
+     },
+<<<<<<< HEAD
+     "execution_count": 31,
+=======
+     "execution_count": 16,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "newsgroups_train.filenames.shape, newsgroups_train.target.shape"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Let's look at some of the data.  Can you guess which category these messages are in?"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 32,
+=======
+   "execution_count": 17,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Hi,\n",
+      "\n",
+      "I've noticed that if you only save a model (with all your mapping planes\n",
+      "positioned carefully) to a .3DS file that when you reload it after restarting\n",
+      "3DS, they are given a default position and orientation.  But if you save\n",
+      "to a .PRJ file their positions/orientation are preserved.  Does anyone\n",
+      "know why this information is not stored in the .3DS file?  Nothing is\n",
+      "explicitly said in the manual about saving texture rules in the .PRJ file. \n",
+      "I'd like to be able to read the texture rule information, does anyone have \n",
+      "the format for the .PRJ file?\n",
+      "\n",
+      "Is the .CEL file format available from somewhere?\n",
+      "\n",
+      "Rych\n",
+      "\n",
+      "\n",
+      "Seems to be, barring evidence to the contrary, that Koresh was simply\n",
+      "another deranged fanatic who thought it neccessary to take a whole bunch of\n",
+      "folks with him, children and all, to satisfy his delusional mania. Jim\n",
+      "Jones, circa 1993.\n",
+      "\n",
+      "\n",
+      "Nope - fruitcakes like Koresh have been demonstrating such evil corruption\n",
+      "for centuries.\n",
+      "\n",
+      " >In article <1993Apr19.020359.26996@sq.sq.com>, msb@sq.sq.com (Mark Brader) \n",
+      "\n",
+      "MB>                                                             So the\n",
+      "MB> 1970 figure seems unlikely to actually be anything but a perijove.\n",
+      "\n",
+      "JG>Sorry, _perijoves_...I'm not used to talking this language.\n",
+      "\n",
+      "Couldn't we just say periapsis or apoapsis?\n",
+      "\n",
+      " \n"
+     ]
+    }
+   ],
+   "source": [
+    "print(\"\\n\".join(newsgroups_train.data[:3]))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "hint: definition of *perijove* is the point in the orbit of a satellite of Jupiter nearest the planet's center "
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 33,
+=======
+   "execution_count": 18,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "array(['comp.graphics', 'talk.religion.misc', 'sci.space'], \n",
+       "      dtype='<U18')"
+      ]
+     },
+<<<<<<< HEAD
+     "execution_count": 33,
+=======
+     "execution_count": 18,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "np.array(newsgroups_train.target_names)[newsgroups_train.target[:3]]"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "The target attribute is the integer index of the category."
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 16,
+=======
+   "execution_count": 19,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "array([1, 3, 2, 0, 2, 0, 2, 1, 2, 1])"
+      ]
+     },
+<<<<<<< HEAD
+     "execution_count": 16,
+=======
+     "execution_count": 19,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "newsgroups_train.target[:10]"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 17,
+   "metadata": {
+    "collapsed": true
+   },
+=======
+   "execution_count": 20,
+   "metadata": {},
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "outputs": [],
+   "source": [
+    "num_topics, num_top_words = 6, 8"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Next, scikit learn has a method that will extract all the word counts for us."
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 18,
+   "metadata": {
+    "collapsed": true
+   },
+=======
+   "execution_count": 21,
+   "metadata": {},
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "outputs": [],
+   "source": [
+    "from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 19,
+=======
+   "execution_count": 22,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(2034, 26576)"
+      ]
+     },
+<<<<<<< HEAD
+     "execution_count": 19,
+=======
+     "execution_count": 22,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "vectorizer = CountVectorizer(stop_words='english')\n",
+    "vectors = vectorizer.fit_transform(newsgroups_train.data).todense() # (documents, vocab)\n",
+    "vectors.shape #, vectors.nnz / vectors.shape[0], row_means.shape"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 20,
+=======
+   "execution_count": 23,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "2034 (2034, 26576)\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(len(newsgroups_train.data), vectors.shape)"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 21,
+   "metadata": {
+    "collapsed": true
+   },
+=======
+   "execution_count": 24,
+   "metadata": {},
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "outputs": [],
+   "source": [
+    "vocab = np.array(vectorizer.get_feature_names())"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 22,
+=======
+   "execution_count": 25,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(26576,)"
+      ]
+     },
+<<<<<<< HEAD
+     "execution_count": 22,
+=======
+     "execution_count": 25,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "vocab.shape"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 23,
+=======
+   "execution_count": 26,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "array(['cosmonauts', 'cosmos', 'cosponsored', 'cost', 'costa', 'costar',\n",
+       "       'costing', 'costly', 'costruction', 'costs', 'cosy', 'cote',\n",
+       "       'couched', 'couldn', 'council', 'councils', 'counsel', 'counselees',\n",
+       "       'counselor', 'count'], \n",
+       "      dtype='<U80')"
+      ]
+     },
+<<<<<<< HEAD
+     "execution_count": 23,
+=======
+     "execution_count": 26,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "vocab[7000:7020]"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Singular Value Decomposition (SVD)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "\"SVD is not nearly as famous as it should be.\" - Gilbert Strang"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "We would clearly expect that the words that appear most frequently in one topic would appear less frequently in the other - otherwise that word wouldn't make a good choice to separate out the two topics. Therefore, we expect the topics to be **orthogonal**.\n",
+    "\n",
+    "The SVD algorithm factorizes a matrix into one matrix with **orthogonal columns** and one with **orthogonal rows** (along with a diagonal matrix, which contains the **relative importance** of each factor).\n",
+    "\n",
+    "<img src=\"images/svd_fb.png\" alt=\"\" style=\"width: 80%\"/>\n",
+    "(source: [Facebook Research: Fast Randomized SVD](https://research.fb.com/fast-randomized-svd/))\n",
+    "\n",
+    "SVD is an **exact decomposition**, since the matrices it creates are big enough to fully cover the original matrix. SVD is extremely widely used in linear algebra, and specifically in data science, including:\n",
+    "\n",
+    "- semantic analysis\n",
+    "- collaborative filtering/recommendations ([winning entry for Netflix Prize](https://datajobs.com/data-science-repo/Recommender-Systems-%5BNetflix%5D.pdf))\n",
+    "- calculate Moore-Penrose pseudoinverse\n",
+    "- data compression\n",
+    "- principal component analysis (will be covered later in course)"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 24,
+=======
+   "execution_count": 27,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+<<<<<<< HEAD
+      "CPU times: user 44.2 s, sys: 650 ms, total: 44.9 s\n",
+      "Wall time: 12.9 s\n"
+=======
+      "CPU times: user 1min 47s, sys: 10 s, total: 1min 57s\n",
+      "Wall time: 17.2 s\n"
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+     ]
+    }
+   ],
+   "source": [
+    "%time U, s, Vh = linalg.svd(vectors, full_matrices=False)"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 25,
+=======
+   "execution_count": 64,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "(2034, 26576) (2034, 2034) (2034,) (2034, 26576)\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(vectors.shape, U.shape, s.shape, Vh.shape)"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 26,
+=======
+   "execution_count": 65,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {
+    "scrolled": false
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+<<<<<<< HEAD
+      "CPU times: user 2min 41s, sys: 2.39 s, total: 2min 43s\n",
+      "Wall time: 42.9 s\n"
+=======
+      "CPU times: user 7min 52s, sys: 23 s, total: 8min 15s\n",
+      "Wall time: 1min 5s\n"
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+     ]
+    }
+   ],
+   "source": [
+    "%time U, s, Vh = linalg.svd(vectors, full_matrices=True)"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 27,
+=======
+   "execution_count": 66,
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "(2034, 26576) (2034, 2034) (2034,) (26576, 26576)\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(vectors.shape, U.shape, s.shape, Vh.shape)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Confirm this is a decomposition of the input."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### Answer"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "##### `full_matrices=False`"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 21,
+   "metadata": {
+    "collapsed": true
+   },
+=======
+   "execution_count": 31,
+   "metadata": {},
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "outputs": [],
+   "source": [
+    "U, s, Vh = linalg.svd(vectors, full_matrices=False)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 32,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(2034, 2034)"
+      ]
+     },
+     "execution_count": 32,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "#Exercise: confrim that U, s, Vh is a decomposition of the var Vectors\n",
+    "S = np.diag(s)\n",
+    "S.shape"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 33,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "True"
+      ]
+     },
+     "execution_count": 33,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "np.allclose( U * s @ Vh, vectors)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 34,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "True"
+      ]
+     },
+     "execution_count": 34,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "np.allclose(U @ S @ Vh, vectors)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 35,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "True"
+      ]
+     },
+     "execution_count": 35,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "np.allclose(np.dot(np.dot(U, S), Vh), vectors)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 36,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "True"
+      ]
+     },
+     "execution_count": 36,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "np.allclose(np.matmul(np.matmul(U, S), Vh), vectors)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Confirm that U, V are orthonormal"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### Answer"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 37,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "True"
+      ]
+     },
+     "execution_count": 37,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "#Exercise: Confirm that U, Vh are orthonormal\n",
+    "np.allclose(np.dot(U, U.T), np.eye(len(U))) and np.allclose(np.dot(Vh, Vh.T), np.eye(len(Vh)))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 38,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "1.0000000000000004"
+      ]
+     },
+     "execution_count": 38,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "np.dot(U[:, 0], U[:, 0])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 39,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "2.6373217845709895e-17"
+      ]
+     },
+     "execution_count": 39,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "np.dot(U[:, 0], U[:, 234])"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### Topics"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "What can we say about the singular values s?"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 40,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "image/png": "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\n",
+      "text/plain": [
+       "<matplotlib.figure.Figure at 0x7f81159b7438>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "plt.plot(s);"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 41,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "[<matplotlib.lines.Line2D at 0x7f8115f0e9e8>]"
+      ]
+     },
+     "execution_count": 41,
+     "metadata": {},
+     "output_type": "execute_result"
+    },
+    {
+     "data": {
+      "image/png": "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\n",
+      "text/plain": [
+       "<matplotlib.figure.Figure at 0x7f81159bfe80>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "plt.plot(s[:10])"
+   ]
+  },
+  {
+   "cell_type": "code",
+<<<<<<< HEAD
+   "execution_count": 27,
+   "metadata": {
+    "collapsed": true
+   },
+=======
+   "execution_count": 42,
+   "metadata": {},
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "outputs": [],
+   "source": [
+    "num_top_words=8\n",
+    "\n",
+    "def show_topics(a):\n",
+    "    top_words = lambda t: [vocab[i] for i in np.argsort(t)[:-num_top_words-1:-1]]\n",
+    "    topic_words = ([top_words(t) for t in a])\n",
+    "    return [' '.join(t) for t in topic_words]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 56,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['critus ditto propagandist surname galacticentric kindergarten surreal imaginative',\n",
+       " 'jpeg gif file color quality image jfif format',\n",
+       " 'graphics edu pub mail 128 3d ray ftp',\n",
+       " 'jesus god matthew people atheists atheism does graphics',\n",
+       " 'image data processing analysis software available tools display',\n",
+       " 'god atheists atheism religious believe religion argument true',\n",
+       " 'space nasa lunar mars probe moon missions probes',\n",
+       " 'image probe surface lunar mars probes moon orbit',\n",
+       " 'argument fallacy conclusion example true ad argumentum premises',\n",
+       " 'space larson image theory universe physical nasa material']"
+      ]
+     },
+     "execution_count": 56,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "show_topics(Vh[:10])"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "##### My dissect"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 57,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "array([3, 4, 1, 0, 2])"
+      ]
+     },
+     "execution_count": 57,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "np.argsort([3, 2, 4, 0, 1])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 58,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "array([13816, 12642,  8956, ..., 19210,  8462,  7181])"
+      ]
+     },
+     "execution_count": 58,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "a = Vh[:10]\n",
+    "t = a[0]\n",
+    "np.argsort(t)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 59,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "True"
+      ]
+     },
+     "execution_count": 59,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "max(t)==t[np.argsort(t)[-1]] and min(t)==t[np.argsort(t)[0]]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 60,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "array([ 7181,  8462, 19210, ...,  8956, 12642, 13816])"
+      ]
+     },
+     "execution_count": 60,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "np.argsort(t)[::-1]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 61,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "array([ 7181,  8462, 19210, 23311, 10901, 14090, 23319, 12662])"
+      ]
+     },
+     "execution_count": 61,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "np.argsort(t)[:-num_top_words-1:-1]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 62,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "26576"
+      ]
+     },
+     "execution_count": 62,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "len(vocab)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 63,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "'critus ditto propagandist surname galacticentric kindergarten surreal imaginative'"
+      ]
+     },
+     "execution_count": 63,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "' '.join(vocab[i] for i in np.argsort(t)[:-num_top_words-1:-1])"
+   ]
+  },
+  {
+<<<<<<< HEAD
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": []
+  },
+  {
+=======
+>>>>>>> fa3274e0c5f26af091e89841ebedeb9113ad968f
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "We get topics that match the kinds of clusters we would expect! This is despite the fact that this is an **unsupervised algorithm** - which is to say, we never actually told the algorithm how our documents are grouped."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "We will return to SVD in **much more detail** later.  For now, the important takeaway is that we have a tool that allows us to exactly factor a matrix into orthogonal columns and orthogonal rows."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Non-negative Matrix Factorization (NMF)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true
+   },
+   "source": [
+    "#### Motivation"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "<img src=\"images/face_pca.png\" alt=\"PCA on faces\" style=\"width: 80%\"/>\n",
+    "\n",
+    "(source: [NMF Tutorial](http://perso.telecom-paristech.fr/~essid/teach/NMF_tutorial_ICME-2014.pdf))\n",
+    "\n",
+    "A more interpretable approach:\n",
+    "\n",
+    "<img src=\"images/face_outputs.png\" alt=\"NMF on Faces\" style=\"width: 80%\"/>\n",
+    "\n",
+    "(source: [NMF Tutorial](http://perso.telecom-paristech.fr/~essid/teach/NMF_tutorial_ICME-2014.pdf))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true
+   },
+   "source": [
+    "#### Idea"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "Rather than constraining our factors to be *orthogonal*, another idea would to constrain them to be *non-negative*. NMF is a factorization of a non-negative data set $V$: $$ V = W H$$ into non-negative matrices $W,\\; H$. Often positive factors will be **more easily interpretable** (and this is the reason behind NMF's popularity). \n",
+    "\n",
+    "<img src=\"images/face_nmf.png\" alt=\"NMF on faces\" style=\"width: 80%\"/>\n",
+    "\n",
+    "(source: [NMF Tutorial](http://perso.telecom-paristech.fr/~essid/teach/NMF_tutorial_ICME-2014.pdf))\n",
+    "\n",
+    "Nonnegative matrix factorization (NMF) is a non-exact factorization that factors into one skinny positive matrix and one short positive matrix.  NMF is NP-hard and non-unique.  There are a number of variations on it, created by adding different constraints. "
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true
+   },
+   "source": [
+    "#### Applications of NMF"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "- [Face Decompositions](http://scikit-learn.org/stable/auto_examples/decomposition/plot_faces_decomposition.html#sphx-glr-auto-examples-decomposition-plot-faces-decomposition-py)\n",
+    "- [Collaborative Filtering, eg movie recommendations](http://www.quuxlabs.com/blog/2010/09/matrix-factorization-a-simple-tutorial-and-implementation-in-python/)\n",
+    "- [Audio source separation](https://pdfs.semanticscholar.org/cc88/0b24791349df39c5d9b8c352911a0417df34.pdf)\n",
+    "- [Chemistry](http://ieeexplore.ieee.org/document/1532909/)\n",
+    "- [Bioinformatics](https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-015-0485-4) and [Gene Expression](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2623306/)\n",
+    "- Topic Modeling (our problem!)\n",
+    "\n",
+    "<img src=\"images/nmf_doc.png\" alt=\"NMF on documents\" style=\"width: 80%\"/>\n",
+    "\n",
+    "(source: [NMF Tutorial](http://perso.telecom-paristech.fr/~essid/teach/NMF_tutorial_ICME-2014.pdf))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "**More Reading**:\n",
+    "\n",
+    "- [The Why and How of Nonnegative Matrix Factorization](https://arxiv.org/pdf/1401.5226.pdf)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true
+   },
+   "source": [
+    "### NMF from sklearn"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "First, we will use [scikit-learn's implementation of NMF](http://scikit-learn.org/stable/modules/generated/sklearn.decomposition.NMF.html):"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 35,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "m, n = vectors.shape\n",
+    "d = 5  # num topics"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 36,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "clf = decomposition.NMF(n_components=d, random_state=1)\n",
+    "\n",
+    "W1 = clf.fit_transform(vectors)\n",
+    "H1 = clf.components_"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 37,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['jpeg image gif file color images format quality',\n",
+       " 'edu graphics pub mail 128 ray ftp send',\n",
+       " 'space launch satellite nasa commercial satellites year market',\n",
+       " 'jesus god people matthew atheists does atheism said',\n",
+       " 'image data available software processing ftp edu analysis']"
+      ]
+     },
+     "execution_count": 37,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "*show_topics(H1)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "##### my dissect"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 38,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "((2034, 5), (5, 26576))"
+      ]
+     },
+     "execution_count": 38,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "W1.shape, H1.shape"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 39,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "array([0.08858936, 0.02984714, 0.        , 0.04220515, 0.        ])"
+      ]
+     },
+     "execution_count": 39,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "W1[0]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 40,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "array([0.12126083, 0.11928575, 0.05766391, 0.        , 0.12742192])"
+      ]
+     },
+     "execution_count": 40,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "H1[:, 0]"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true
+   },
+   "source": [
+    "### TF-IDF"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "[Topic Frequency-Inverse Document Frequency](http://www.tfidf.com/) (TF-IDF) is a way to normalize term counts by taking into account how often they appear in a document, how long the document is, and how commmon/rare the term is.\n",
+    "\n",
+    "TF = (# occurrences of term t in document) / (# of words in documents)\n",
+    "\n",
+    "IDF = log(# of documents / # documents with term t in it)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 41,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "vectorizer_tfidf = TfidfVectorizer(stop_words='english')\n",
+    "vectors_tfidf = vectorizer_tfidf.fit_transform(newsgroups_train.data) # (documents, vocab)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 42,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "W1 = clf.fit_transform(vectors_tfidf)\n",
+    "H1 = clf.components_"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 43,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['people don think just like objective say morality',\n",
+       " 'graphics thanks files image file program windows know',\n",
+       " 'space nasa launch shuttle orbit moon lunar earth',\n",
+       " 'ico bobbe tek beauchaine bronx manhattan sank queens',\n",
+       " 'god jesus bible believe christian atheism does belief']"
+      ]
+     },
+     "execution_count": 43,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "show_topics(H1)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 44,
+   "metadata": {
+    "hidden": true,
+    "scrolled": false
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "[<matplotlib.lines.Line2D at 0x7fd3bcf4d550>]"
+      ]
+     },
+     "execution_count": 44,
+     "metadata": {},
+     "output_type": "execute_result"
+    },
+    {
+     "data": {
+      "image/png": "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\n",
+      "text/plain": [
+       "<matplotlib.figure.Figure at 0x7fd3bcefea20>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "plt.plot(clf.components_[0])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 45,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "43.71292605795281"
+      ]
+     },
+     "execution_count": 45,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "clf.reconstruction_err_"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "##### my dissect"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 46,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "((2034, 26576), (2034, 26576), (2034, 5), (5, 26576))"
+      ]
+     },
+     "execution_count": 46,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "vectors.shape, vectors_tfidf.shape, W1.shape, H1.shape"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true
+   },
+   "source": [
+    "### NMF in summary"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "Benefits: Fast and easy to use!\n",
+    "\n",
+    "Downsides: took years of research and expertise to create"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "Notes:\n",
+    "- For NMF, matrix needs to be at least as tall as it is wide, or we get an error with fit_transform\n",
+    "- Can use df_min in CountVectorizer to only look at words that were in at least k of the split texts"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true
+   },
+   "source": [
+    "### NMF from scratch in numpy, using SGD"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "#### Gradient Descent"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "The key idea of standard **gradient descent**:\n",
+    "1. Randomly choose some weights to start\n",
+    "2. Loop:\n",
+    "    - Use weights to calculate a prediction\n",
+    "    - Calculate the derivative of the loss\n",
+    "    - Update the weights\n",
+    "3. Repeat step 2 lots of times.  Eventually we end up with some decent weights.\n",
+    "\n",
+    "**Key**: We want to decrease our loss and the derivative tells us the direction of **steepest descent**.  \n",
+    "\n",
+    "Note that *loss*, *error*, and *cost* are all terms used to describe the same thing.\n",
+    "\n",
+    "Let's take a look at the [Gradient Descent Intro notebook](gradient-descent-intro.ipynb) (originally from the [fast.ai deep learning course](https://github.com/fastai/courses))."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true,
+    "hidden": true
+   },
+   "source": [
+    "#### Stochastic Gradient Descent (SGD)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "**Stochastic gradient descent** is an incredibly useful optimization method (it is also the heart of deep learning, where it is used for backpropagation).\n",
+    "\n",
+    "For *standard* gradient descent, we evaluate the loss using **all** of our data which can be really slow.  In *stochastic* gradient descent, we evaluate our loss function on just a sample of our data (sometimes called a *mini-batch*).  We would get different loss values on different samples of the data, so this is *why it is stochastic*.  It turns out that this is still an effective way to optimize, and it's much more efficient!\n",
+    "\n",
+    "We can see how this works in this [excel spreadsheet](graddesc.xlsm) (originally from the [fast.ai deep learning course](https://github.com/fastai/courses)).\n",
+    "\n",
+    "**Resources**:\n",
+    "- [SGD Lecture from Andrew Ng's Coursera ML course](https://www.coursera.org/learn/machine-learning/lecture/DoRHJ/stochastic-gradient-descent)\n",
+    "- <a href=\"http://wiki.fast.ai/index.php/Stochastic_Gradient_Descent_(SGD)\">fast.ai wiki page on SGD</a>\n",
+    "- [Gradient Descent For Machine Learning](http://machinelearningmastery.com/gradient-descent-for-machine-learning/) (Jason Brownlee- Machine Learning Mastery)\n",
+    "- [An overview of gradient descent optimization algorithms](http://sebastianruder.com/optimizing-gradient-descent/)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true,
+    "hidden": true
+   },
+   "source": [
+    "#### Applying SGD to NMF"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "source": [
+    "**Goal**: Decompose $V\\;(m \\times n)$ into $$V \\approx WH$$ where $W\\;(m \\times d)$ and $H\\;(d \\times n)$, $W,\\;H\\;>=\\;0$, and we've minimized the Frobenius norm of $V-WH$.\n",
+    "\n",
+    "**Approach**: We will pick random positive $W$ & $H$, and then use SGD to optimize."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "**To use SGD, we need to know the gradient of the loss function.**\n",
+    "\n",
+    "**Sources**:\n",
+    "- Optimality and gradients of NMF: http://users.wfu.edu/plemmons/papers/chu_ple.pdf\n",
+    "- Projected gradients: https://www.csie.ntu.edu.tw/~cjlin/papers/pgradnmf.pdf"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 47,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "lam=1e3\n",
+    "lr=1e-2\n",
+    "m, n = vectors_tfidf.shape"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 48,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "W1 = clf.fit_transform(vectors)\n",
+    "H1 = clf.components_"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 49,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['jpeg image gif file color images format quality',\n",
+       " 'edu graphics pub mail 128 ray ftp send',\n",
+       " 'space launch satellite nasa commercial satellites year market',\n",
+       " 'jesus god people matthew atheists does atheism said',\n",
+       " 'image data available software processing ftp edu analysis']"
+      ]
+     },
+     "execution_count": 49,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "show_topics(H1)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 50,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "mu = 1e-6\n",
+    "def grads(M, W, H):\n",
+    "    R = W@H-M\n",
+    "    return R@H.T + penalty(W, mu)*lam, W.T@R + penalty(H, mu)*lam # dW, dH"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 51,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "def penalty(M, mu):\n",
+    "    return np.where(M>=mu,0, np.min(M - mu, 0))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 52,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "def upd(M, W, H, lr):\n",
+    "    dW,dH = grads(M,W,H)\n",
+    "    W -= lr*dW; H -= lr*dH"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 53,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "def report(M,W,H): \n",
+    "    print(np.linalg.norm(M-W@H), W.min(), H.min(), (W<0).sum(), (H<0).sum())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 54,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "W = np.abs(np.random.normal(scale=0.01, size=(m,d)))\n",
+    "H = np.abs(np.random.normal(scale=0.01, size=(d,n)))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 55,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "44.42500749478128 3.163805037470507e-06 1.09743611225686e-07 0 0\n"
+     ]
+    }
+   ],
+   "source": [
+    "report(vectors_tfidf, W, H)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 56,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "upd(vectors_tfidf,W,H,lr)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 57,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "44.41746500623353 -0.0010234589108311107 -7.113420016347927e-05 135 299\n"
+     ]
+    }
+   ],
+   "source": [
+    "report(vectors_tfidf, W, H)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 58,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "44.41198215961409 -0.0005990412626939792 -5.828269884393015e-05 131 244\n",
+      "44.3746532002469 -0.00032207189429665035 -5.6570081287454004e-05 53 460\n",
+      "44.34603225545253 -0.0002534942220580865 -7.345887283372209e-05 46 915\n",
+      "44.314102872043826 -0.00018391975732575137 -9.458371281829725e-05 37 1553\n",
+      "44.27905210420998 -0.00011480591122991875 -0.0001027561653172477 31 2153\n"
+     ]
+    }
+   ],
+   "source": [
+    "for i in range(50): \n",
+    "    upd(vectors_tfidf,W,H,lr)\n",
+    "    if i % 10 == 0: report(vectors_tfidf,W,H)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 59,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['space god think people don just like know',\n",
+       " 'people space god don know like just think',\n",
+       " 'don god people space just know think like',\n",
+       " 'space just don god people like know think',\n",
+       " 'space people god just like know don think']"
+      ]
+     },
+     "execution_count": 59,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "show_topics(H)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "This is painfully slow to train!  Lots of parameter fiddling and still slow to train (or explodes)."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true
+   },
+   "source": [
+    "### PyTorch"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "[PyTorch](http://pytorch.org/) is a Python framework for tensors and dynamic neural networks with GPU acceleration.  Many of the core contributors work on Facebook's AI team.  In many ways, it is similar to Numpy, only with the increased parallelization of using a GPU.\n",
+    "\n",
+    "From the [PyTorch documentation](http://pytorch.org/tutorials/beginner/blitz/tensor_tutorial.html):\n",
+    "\n",
+    "<img src=\"images/what_is_pytorch.png\" alt=\"pytorch\" style=\"width: 80%\"/>\n",
+    "\n",
+    "**Further learning**: If you are curious to learn what *dynamic* neural networks are, you may want to watch [this talk](https://www.youtube.com/watch?v=Z15cBAuY7Sc) by Soumith Chintala, Facebook AI researcher and core PyTorch contributor.\n",
+    "\n",
+    "If you want to learn more PyTorch, you can try this [tutorial](http://pytorch.org/tutorials/beginner/deep_learning_60min_blitz.html) or this [learning by examples](http://pytorch.org/tutorials/beginner/pytorch_with_examples.html)."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "**Note about GPUs**: If you are not using a GPU, you will need to remove the `.cuda()` from the methods below. GPU usage is not required for this course, but I thought it would be of interest to some of you.  To learn how to create an AWS instance with a GPU, you can watch the [fast.ai setup lesson](http://course.fast.ai/lessons/aws.html)."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "import torch\n",
+    "import torch.cuda as tc\n",
+    "from torch.autograd import Variable"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "def V(M): return Variable(M, requires_grad=True)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "ename": "NameError",
+     "evalue": "name 'vectors_tfidf' is not defined",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mNameError\u001b[0m                                 Traceback (most recent call last)",
+      "\u001b[0;32m<ipython-input-5-913dd74e1e8a>\u001b[0m in \u001b[0;36m<module>\u001b[0;34m()\u001b[0m\n\u001b[0;32m----> 1\u001b[0;31m \u001b[0mv\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0mvectors_tfidf\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mtodense\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m",
+      "\u001b[0;31mNameError\u001b[0m: name 'vectors_tfidf' is not defined"
+     ]
+    }
+   ],
+   "source": [
+    "v=vectors_tfidf.todense()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 75,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "# t_vectors = torch.Tensor(v.astype(np.float32)).cuda()\n",
+    "\n",
+    "t_vectors = torch.Tensor(v.astype(np.float32))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 76,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "mu = 1e-5"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 77,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "def grads_t(M, W, H):\n",
+    "    R = W.mm(H)-M\n",
+    "    return (R.mm(H.t()) + penalty_t(W, mu)*lam, \n",
+    "        W.t().mm(R) + penalty_t(H, mu)*lam) # dW, dH\n",
+    "\n",
+    "def penalty_t(M, mu):\n",
+    "#     return (M<mu).type(tc.FloatTensor)*torch.clamp(M - mu, max=0.)\n",
+    "    return (M<mu).type(torch.FloatTensor)*torch.clamp(M - mu, max=0.)\n",
+    "\n",
+    "def upd_t(M, W, H, lr):\n",
+    "    dW,dH = grads_t(M,W,H)\n",
+    "    W.sub_(lr*dW); H.sub_(lr*dH)\n",
+    "\n",
+    "def report_t(M,W,H): \n",
+    "    print((M-W.mm(H)).norm(2), W.min(), H.min(), (W<0).sum(), (H<0).sum())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 78,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "# t_W = tc.FloatTensor(m,d)\n",
+    "# t_H = tc.FloatTensor(d,n)\n",
+    "t_W = torch.FloatTensor(m,d)\n",
+    "t_H = torch.FloatTensor(d,n)\n",
+    "t_W.normal_(std=0.01).abs_(); \n",
+    "t_H.normal_(std=0.01).abs_();"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 79,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "d=6; lam=100; lr=0.05"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 95,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "44.068764975383296 -0.006069551222026348 -0.004575853236019611 1382 24250\n",
+      "43.66041173175436 -0.007628859020769596 -0.012425994500517845 2071 20899\n",
+      "43.64800946588486 -0.004666333552449942 -0.008889086544513702 2333 21699\n",
+      "43.64595717855921 -0.0050855171866714954 -0.0074624428525567055 2723 22520\n",
+      "43.64541990822628 -0.004575037397444248 -0.004468441475182772 3080 23961\n",
+      "43.64511866413662 -0.0029262839816510677 -0.0040619149804115295 3300 24848\n",
+      "43.64474546163642 -0.003945274278521538 -0.005996117368340492 3036 26021\n",
+      "43.644677096550325 -0.0037573790177702904 -0.005901839584112167 2957 26043\n",
+      "43.644398606876145 -0.003289397107437253 -0.0052999453619122505 3706 32215\n",
+      "43.644609062202825 -0.0019880468025803566 -0.0033233545254915953 4939 30359\n"
+     ]
+    }
+   ],
+   "source": [
+    "for i in range(1000): \n",
+    "    upd_t(t_vectors,t_W,t_H,lr)\n",
+    "    if i % 100 == 0: \n",
+    "        report_t(t_vectors,t_W,t_H)\n",
+    "        lr *= 0.9"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 100,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['thanks graphics files image file program windows know',\n",
+       " 'objective morality values moral subjective science absolute claim',\n",
+       " 'space nasa launch shuttle orbit lunar moon earth',\n",
+       " 'ico bobbe tek bronx beauchaine manhattan sank queens',\n",
+       " 'god jesus bible believe atheism christian does belief',\n",
+       " 'don people just think like know say religion']"
+      ]
+     },
+     "execution_count": 100,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "show_topics(t_H.cpu().numpy())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 101,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "[<matplotlib.lines.Line2D at 0x7fd3810fa898>]"
+      ]
+     },
+     "execution_count": 101,
+     "metadata": {},
+     "output_type": "execute_result"
+    },
+    {
+     "data": {
+      "image/png": "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\n",
+      "text/plain": [
+       "<matplotlib.figure.Figure at 0x7fd3bcf7c320>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "plt.plot(t_H.cpu().numpy()[0])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 102,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "0.41100504994392395"
+      ]
+     },
+     "execution_count": 102,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "t_W.mm(t_H).max()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 103,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "1.0"
+      ]
+     },
+     "execution_count": 103,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "t_vectors.max()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true
+   },
+   "source": [
+    "### PyTorch: autograd"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "Above, we used our knowledge of what the gradient of the loss function was to do SGD from scratch in PyTorch.  However, PyTorch has an automatic differentiation package, [autograd](http://pytorch.org/docs/autograd.html) which we could use instead.  This is really useful, in that we can use autograd on problems where we don't know what the derivative is.  \n",
+    "\n",
+    "The approach we use below is very general, and would work for almost any optimization problem.\n",
+    "\n",
+    "In PyTorch, Variables have the same API as tensors, but Variables remember the operations used on to create them.  This lets us take derivatives."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true,
+    "hidden": true
+   },
+   "source": [
+    "#### PyTorch Autograd Introduction"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "Example taken from [this tutorial](http://pytorch.org/tutorials/beginner/former_torchies/autograd_tutorial.html) in the official documentation."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 104,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Variable containing:\n",
+      " 1  1\n",
+      " 1  1\n",
+      "[torch.FloatTensor of size 2x2]\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "x = Variable(torch.ones(2, 2), requires_grad=True)\n",
+    "print(x)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 105,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      " 1  1\n",
+      " 1  1\n",
+      "[torch.FloatTensor of size 2x2]\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(x.data)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 106,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "None\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(x.grad)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 107,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Variable containing:\n",
+      " 3  3\n",
+      " 3  3\n",
+      "[torch.FloatTensor of size 2x2]\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "y = x + 2\n",
+    "print(y)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 108,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Variable containing:\n",
+      " 27  27\n",
+      " 27  27\n",
+      "[torch.FloatTensor of size 2x2]\n",
+      " Variable containing:\n",
+      " 108\n",
+      "[torch.FloatTensor of size 1]\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "z = y * y * 3\n",
+    "out = z.sum()\n",
+    "print(z, out)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 109,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Variable containing:\n",
+      " 18  18\n",
+      " 18  18\n",
+      "[torch.FloatTensor of size 2x2]\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "out.backward()\n",
+    "print(x.grad)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "#### Using Autograd for NMF"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 110,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "lam=1e6"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 113,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "# pW = Variable(tc.FloatTensor(m,d), requires_grad=True)\n",
+    "# pH = Variable(tc.FloatTensor(d,n), requires_grad=True)\n",
+    "pW = Variable(torch.FloatTensor(m,d), requires_grad=True)\n",
+    "pH = Variable(torch.FloatTensor(d,n), requires_grad=True)\n",
+    "pW.data.normal_(std=0.01).abs_()\n",
+    "pH.data.normal_(std=0.01).abs_();"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 115,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "def report():\n",
+    "    W,H = pW.data, pH.data\n",
+    "    print((M-pW.mm(pH)).norm(2).data[0], W.min(), H.min(), (W<0).sum(), (H<0).sum())\n",
+    "\n",
+    "def penalty(A):\n",
+    "#     return torch.pow((A<0).type(tc.FloatTensor)*torch.clamp(A, max=0.), 2)\n",
+    "    return torch.pow((A<0).type(torch.FloatTensor)*torch.clamp(A, max=0.), 2)\n",
+    "\n",
+    "def penalize(): return penalty(pW).mean() + penalty(pH).mean()\n",
+    "\n",
+    "def loss(): return (M-pW.mm(pH)).norm(2) + penalize()*lam"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 117,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "# M = Variable(t_vectors).cuda()\n",
+    "M = Variable(t_vectors)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 118,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "44.44095230102539 6.564379191331682e-07 4.939267839176864e-08 0 0\n"
+     ]
+    }
+   ],
+   "source": [
+    "opt = torch.optim.Adam([pW,pH], lr=1e-3, betas=(0.9,0.9))\n",
+    "lr = 0.05\n",
+    "report()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "How to apply SGD, using autograd:"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 119,
+   "metadata": {
+    "hidden": true,
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "43.97267532348633 -0.0009269234724342823 -0.0011341865174472332 244 11804\n",
+      "43.80348205566406 -0.0009566054213792086 -0.0008043916313908994 289 14248\n",
+      "43.72715759277344 -0.00041428866097703576 -0.0011877443175762892 195 16109\n",
+      "43.68086624145508 -0.0003030466614291072 -0.0012115701101720333 182 15900\n",
+      "43.65945053100586 -0.0002643614134285599 -0.001122475485317409 191 14498\n",
+      "43.65233612060547 -0.00024723992100916803 -0.0008788444683887064 193 13453\n",
+      "43.650638580322266 -0.00027220186893828213 -0.0006270495941862464 260 12125\n",
+      "43.650634765625 -0.0002648394729476422 -0.0005976490210741758 258 10860\n",
+      "43.650821685791016 -0.00026111493934877217 -0.0005453325575217605 270 9612\n",
+      "43.650875091552734 -0.0002471537154633552 -0.0004938958445563912 306 8585\n"
+     ]
+    }
+   ],
+   "source": [
+    "for i in range(1000): \n",
+    "    opt.zero_grad()\n",
+    "    l = loss()\n",
+    "    l.backward()\n",
+    "    opt.step()\n",
+    "    if i % 100 == 99: \n",
+    "        report()\n",
+    "        lr *= 0.9     # learning rate annealling"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 120,
+   "metadata": {
+    "hidden": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['objective morality values moral subjective science absolute claim',\n",
+       " 'god jesus bible believe atheism christian does belief',\n",
+       " 'ico bobbe tek bronx beauchaine manhattan sank queens',\n",
+       " 'space nasa launch shuttle orbit lunar moon earth',\n",
+       " 'thanks graphics files image file program windows format',\n",
+       " 'don people just think like know say religion']"
+      ]
+     },
+     "execution_count": 120,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "h = pH.data.cpu().numpy()\n",
+    "show_topics(h)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 121,
+   "metadata": {
+    "hidden": true,
+    "scrolled": false
+   },
+   "outputs": [
+    {
+     "data": {
+      "image/png": "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\n",
+      "text/plain": [
+       "<matplotlib.figure.Figure at 0x7fd3810af400>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "plt.plot(h[0]);"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Comparing Approaches"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true
+   },
+   "source": [
+    "#### Scikit-Learn's NMF\n",
+    "- Fast\n",
+    "- No parameter tuning\n",
+    "- Relies on decades of academic research, took experts a long time to implement\n",
+    "\n",
+    "<img src=\"images/nimfa.png\" alt=\"research on NMF\" style=\"width: 80%\"/>\n",
+    "source: [Python Nimfa Documentation](http://nimfa.biolab.si/)\n",
+    "\n",
+    "#### Using PyTorch and SGD\n",
+    "- Took us an hour to implement, didn't have to be NMF experts\n",
+    "- Parameters were fiddly\n",
+    "- Not as fast (tried in numpy and was so slow we had to switch to PyTorch)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Truncated SVD"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "We saved a lot of time when we calculated NMF by only calculating the subset of columns we were interested in. Is there a way to get this benefit with SVD? Yes there is! It's called truncated SVD.  We are just interested in the vectors corresponding to the **largest** singular values."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img src=\"images/svd_fb.png\" alt=\"\" style=\"width: 80%\"/>\n",
+    "(source: [Facebook Research: Fast Randomized SVD](https://research.fb.com/fast-randomized-svd/))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### Shortcomings of classical algorithms for decomposition:"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "- Matrices are \"stupendously big\"\n",
+    "- Data are often **missing or inaccurate**.  Why spend extra computational resources when imprecision of input limits precision of the output?\n",
+    "- **Data transfer** now plays a major role in time of algorithms.  Techniques the require fewer passes over the data may be substantially faster, even if they require more flops (flops = floating point operations).\n",
+    "- Important to take advantage of **GPUs**.\n",
+    "\n",
+    "(source: [Halko](https://arxiv.org/abs/0909.4061))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### Advantages of randomized algorithms:"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "- inherently stable\n",
+    "- performance guarantees do not depend on subtle spectral properties\n",
+    "- needed matrix-vector products can be done in parallel\n",
+    "\n",
+    "(source: [Halko](https://arxiv.org/abs/0909.4061))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Randomized SVD"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Reminder: full SVD is **slow**.  This is the calculation we did above using Scipy's Linalg SVD:"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 81,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "(2034, 26576)"
+      ]
+     },
+     "execution_count": 81,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "vectors.shape"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 82,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "CPU times: user 2min 26s, sys: 44.7 s, total: 3min 10s\n",
+      "Wall time: 28.9 s\n"
+     ]
+    }
+   ],
+   "source": [
+    "%time U, s, Vh = linalg.svd(vectors, full_matrices=False)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 83,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "(2034, 2034) (2034,) (2034, 26576)\n"
+     ]
+    }
+   ],
+   "source": [
+    "print(U.shape, s.shape, Vh.shape)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Fortunately, there is a faster way:"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 84,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "CPU times: user 13.4 s, sys: 3.5 s, total: 16.9 s\n",
+      "Wall time: 7.88 s\n"
+     ]
+    }
+   ],
+   "source": [
+    "%time u, s, v = decomposition.randomized_svd(vectors, 5)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "The runtime complexity for SVD is $\\mathcal{O}(\\text{min}(m^2 n,\\; m n^2))$"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "**Question**: How can we speed things up?  (without new breakthroughs in SVD research)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "**Idea**: Let's use a smaller matrix (with smaller $n$)!\n",
+    "\n",
+    "Instead of calculating the SVD on our full matrix $A$ which is $m \\times n$, let's use $B = A Q$, which is just $m \\times r$ and $r << n$\n",
+    "\n",
+    "We haven't found a better general SVD method, we are just using the method we have on a smaller matrix."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 85,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "CPU times: user 13.6 s, sys: 3.13 s, total: 16.7 s\n",
+      "Wall time: 7.64 s\n"
+     ]
+    }
+   ],
+   "source": [
+    "%time u, s, v = decomposition.randomized_svd(vectors, 5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 86,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "((2034, 5), (5,), (5, 26576))"
+      ]
+     },
+     "execution_count": 86,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "u.shape, s.shape, v.shape"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 87,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['jpeg image edu file graphics images gif data',\n",
+       " 'jpeg gif file color quality image jfif format',\n",
+       " 'space jesus launch god people satellite matthew atheists',\n",
+       " 'jesus god matthew people atheists atheism does graphics',\n",
+       " 'image data processing analysis software available tools display']"
+      ]
+     },
+     "execution_count": 87,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "show_topics(v)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Here are some results from [Facebook Research](https://research.fb.com/fast-randomized-svd/):\n",
+    "\n",
+    "<img src=\"images/randomizedSVDbenchmarks.png\" alt=\"\" style=\"width: 80%\"/>"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "**Johnson-Lindenstrauss Lemma**: ([from wikipedia](https://en.wikipedia.org/wiki/Johnson%E2%80%93Lindenstrauss_lemma)) a small set of points in a high-dimensional space can be embedded into a space of much lower dimension in such a way that distances between the points are nearly preserved.\n",
+    "\n",
+    "It is desirable to be able to reduce dimensionality of data in a way that preserves relevant structure. The Johnson–Lindenstrauss lemma is a classic result of this type."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Implementing our own Randomized SVD"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 88,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "from scipy import linalg"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "The method `randomized_range_finder` finds an orthonormal matrix whose range approximates the range of A (step 1 in our algorithm above).  To do so, we use the LU and QR factorizations, both of which we will be covering in depth later.\n",
+    "\n",
+    "I am using the [scikit-learn.extmath.randomized_svd source code](https://github.com/scikit-learn/scikit-learn/blob/14031f65d144e3966113d3daec836e443c6d7a5b/sklearn/utils/extmath.py) as a guide."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 89,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "# computes an orthonormal matrix whose range approximates the range of A\n",
+    "# power_iteration_normalizer can be safe_sparse_dot (fast but unstable), LU (imbetween), or QR (slow but most accurate)\n",
+    "def randomized_range_finder(A, size, n_iter=5):\n",
+    "    Q = np.random.normal(size=(A.shape[1], size))\n",
+    "    \n",
+    "    for i in range(n_iter):\n",
+    "        Q, _ = linalg.lu(A @ Q, permute_l=True)\n",
+    "        Q, _ = linalg.lu(A.T @ Q, permute_l=True)\n",
+    "        \n",
+    "    Q, _ = linalg.qr(A @ Q, mode='economic')\n",
+    "    return Q"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "And here's our randomized SVD method:"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 90,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "def randomized_svd(M, n_components, n_oversamples=10, n_iter=4):\n",
+    "    \n",
+    "    n_random = n_components + n_oversamples\n",
+    "    \n",
+    "    Q = randomized_range_finder(M, n_random, n_iter)\n",
+    "    \n",
+    "    # project M to the (k + p) dimensional space using the basis vectors\n",
+    "    B = Q.T @ M\n",
+    "    \n",
+    "    # compute the SVD on the thin matrix: (k + p) wide\n",
+    "    Uhat, s, V = linalg.svd(B, full_matrices=False)\n",
+    "    del B\n",
+    "    U = Q @ Uhat\n",
+    "    \n",
+    "    return U[:, :n_components], s[:n_components], V[:n_components, :]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 91,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "u, s, v = randomized_svd(vectors, 5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 92,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "CPU times: user 9.52 s, sys: 2.37 s, total: 11.9 s\n",
+      "Wall time: 5.09 s\n"
+     ]
+    }
+   ],
+   "source": [
+    "%time u, s, v = randomized_svd(vectors, 5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 93,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "((2034, 5), (5,), (5, 26576))"
+      ]
+     },
+     "execution_count": 93,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "u.shape, s.shape, v.shape"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 94,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['jpeg image edu file graphics images gif data',\n",
+       " 'edu graphics data space pub mail 128 3d',\n",
+       " 'space jesus launch god people satellite matthew atheists',\n",
+       " 'jesus god matthew people atheists atheism does graphics',\n",
+       " 'jpeg graphics space pub edu ray mail send']"
+      ]
+     },
+     "execution_count": 94,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "show_topics(v)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "Write a loop to calculate the error of your decomposition as you vary the # of topics.  Plot the result"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### Answer"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "#Exercise: Write a loop to calculate the error of your decomposition as you vary the # of topics\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true
+   },
+   "outputs": [],
+   "source": [
+    "plt.plot(range(0,n*step,step), error)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "**Further Resources**:\n",
+    "- [a whole course on randomized algorithms](http://www.cs.ubc.ca/~nickhar/W12/)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "heading_collapsed": true
+   },
+   "source": [
+    "### More Details"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "Here is a process to calculate a truncated SVD, described in [Finding Structure with Randomness: Probabilistic Algorithms for Constructing Approximate Matrix Decompositions](https://arxiv.org/pdf/0909.4061.pdf) and [summarized in this blog post](https://research.fb.com/fast-randomized-svd/):\n",
+    "\n",
+    "1\\. Compute an approximation to the range of $A$. That is, we want $Q$ with $r$ orthonormal columns such that $$A \\approx QQ^TA$$\n",
+    "\n",
+    "\n",
+    "2\\. Construct $B = Q^T A$, which is small ($r\\times n$)\n",
+    "\n",
+    "\n",
+    "3\\. Compute the SVD of $B$ by standard methods (fast since $B$ is smaller than $A$), $B = S\\,\\Sigma V^T$\n",
+    "\n",
+    "4\\. Since $$ A \\approx Q Q^T A = Q (S\\,\\Sigma V^T)$$ if we set $U = QS$, then we have a low rank approximation $A \\approx U \\Sigma V^T$."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "#### So how do we find $Q$ (in step 1)?"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "To estimate the range of $A$, we can just take a bunch of random vectors $w_i$, evaluate the subspace formed by $Aw_i$.  We can form a matrix $W$ with the $w_i$ as it's columns.  Now, we take the QR decomposition of $AW = QR$, then the columns of $Q$ form an orthonormal basis for $AW$, which is the range of $A$.\n",
+    "\n",
+    "Since the matrix $AW$ of the product has far more rows than columns and therefore, approximately, orthonormal columns. This is simple probability - with lots of rows, and few columns, it's unlikely that the columns are linearly dependent."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "#### The QR Decomposition"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "We will be learning about the QR decomposition **in depth** later on.  For now, you just need to know that $A = QR$, where $Q$ consists of orthonormal columns, and $R$ is upper triangular.  Trefethen says that the QR decomposition is the most important idea in numerical linear algebra!  We will definitely be returning to it."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "#### How should we choose $r$?"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {
+    "hidden": true
+   },
+   "source": [
+    "Suppose our matrix has 100 columns, and we want 5 columns in U and V. To be safe, we should project our matrix onto an orthogonal basis with a few more rows and columns than 5 (let's use 15).  At the end, we will just grab the first 5 columns of U and V\n",
+    "\n",
+    "So even although our projection was only approximate, by making it a bit bigger than we need, we can make up for the loss of accuracy (since we're only taking a subset later). "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "%time u, s, v = decomposition.randomized_svd(vectors, 5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "collapsed": true,
+    "hidden": true
+   },
+   "outputs": [],
+   "source": [
+    "%time u, s, v = decomposition.randomized_svd(vectors.todense(), 5)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## End"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.6.1"
+  },
+  "toc": {
+   "nav_menu": {},
+   "number_sections": true,
+   "sideBar": true,
+   "skip_h1_title": false,
+   "title_cell": "Table of Contents",
+   "title_sidebar": "Contents",
+   "toc_cell": false,
+   "toc_position": {},
+   "toc_section_display": true,
+   "toc_window_display": true
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
